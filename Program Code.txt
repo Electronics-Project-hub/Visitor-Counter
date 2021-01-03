@@ -1,0 +1,468 @@
+// Program code for bidirectional visitor counter. Visit https://www.pcbway.com/blog/ and serach "Bidirectional visitor counter" for schematics.
+
+#include <DS3231.h> //Download DS3231 Library: http://www.rinkydinkelectronics.com/library.php?id=73
+#include <SPI.h>
+#include <SD.h>
+#include <EEPROM.h>
+#include <LiquidCrystal_I2C.h> // Download I2C library: https://github.com/johnrickman/LiquidCrystal_I2C
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+DS3231  rtc(SDA, SCL);
+File myFile;
+const byte cs = 10;
+const byte IN = 2;
+const byte OUT = 3;
+const byte buzz = 4;
+const byte LED_RED_IN = 5;
+const byte LED_GREEN_IN = 6;
+const byte LED_RED_OUT = 7;
+const byte LED_GREEN_OUT = 8;
+const byte menu = A0;
+const byte enter = A1;
+const byte inc = A2;
+const byte dec = A3;
+const byte EE_HRS_ADD = 50;
+const byte EE_MIN_ADD = 55;
+const byte EE_HRS_ADD_STOP = 60;
+const byte EE_MIN_ADD_STOP = 65;
+const int EE_ADDR_IN = 5;
+const int EE_ADDR_OUT = 15;
+unsigned int EE_ADDR_IN_VAL;
+unsigned int EE_ADDR_OUT_VAL;
+unsigned int in_count = 0;
+unsigned int out_count = 0;
+unsigned int remaining = 0;
+bool brk = false;
+bool RUN = false;
+Time  t;
+
+void setup()
+{
+  Serial.begin(9600);
+  if (EEPROM.read(0) != 100)
+  {
+    EEPROM.write(0, 100);
+    EEPROM.put(EE_ADDR_IN, 0);
+    EEPROM.put(EE_ADDR_OUT, 0);
+    EEPROM.write(EE_HRS_ADD, 0);
+    EEPROM.write(EE_MIN_ADD, 0);
+    EEPROM.write(EE_HRS_ADD_STOP, 0);
+    EEPROM.write(EE_MIN_ADD_STOP, 0);
+  }
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("VISITOR  COUNTER");
+  lcd.setCursor(0, 1);
+  lcd.print("****************");
+  delay(1500);
+  rtc.begin();
+  pinMode(buzz, OUTPUT);
+  pinMode(IN, INPUT_PULLUP);
+  pinMode(OUT, INPUT_PULLUP);
+  pinMode(LED_GREEN_IN, OUTPUT);
+  pinMode(LED_RED_IN, OUTPUT);
+  pinMode(LED_GREEN_OUT, OUTPUT);
+  pinMode(LED_RED_OUT, OUTPUT);
+  pinMode(menu, INPUT_PULLUP);
+  pinMode(enter, INPUT_PULLUP);
+  pinMode(inc, INPUT_PULLUP);
+  pinMode(dec, INPUT_PULLUP);
+  digitalWrite(LED_GREEN_IN, HIGH);
+  digitalWrite(LED_GREEN_OUT, HIGH);
+  attachInterrupt(digitalPinToInterrupt(IN), in_count_func, LOW);
+  attachInterrupt(digitalPinToInterrupt(OUT), out_count_func, LOW);
+  //--------------------------TIME SETTING----------------------------------//
+  /*rtc.setDOW(WEDNESDAY);     // Set Day-of-Week from MONDAY to SUNDAY
+    rtc.setTime(0, 24, 0);     // Set the time to HRS:MIN:SEC (24hr format)
+    rtc.setDate(31, 12, 2020);   // Set the date to date, month, year.
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("   TIME IS SET");
+    lcd.setCursor(0, 1);
+    lcd.print("****************");
+    while (true)
+    {
+    lcd.clear();
+    lcd.setCursor(4, 0);
+    lcd.print(rtc.getTimeStr());
+    lcd.setCursor(3, 1);
+    lcd.print(rtc.getDateStr());
+    delay(500);
+    }*/
+  //------------------------------------------------------------------------//
+  while (!SD.begin(cs))
+  {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("     SD CARD ");
+    lcd.setCursor(0, 1);
+    lcd.print("    NOT FOUND");
+    delay(500);
+  }
+}
+
+void loop()
+{
+  t = rtc.getTime();
+  brk = false;
+  save();
+  if ((t.hour * 100 + t.min) >= (EEPROM.read(EE_HRS_ADD) * 100 + EEPROM.read(EE_MIN_ADD)) && (t.hour * 100 + t.min) <= (EEPROM.read(EE_HRS_ADD_STOP) * 100 + EEPROM.read(EE_MIN_ADD_STOP)))
+  {
+    RUN = true;
+    digitalWrite(LED_RED_IN, LOW);
+    digitalWrite(LED_GREEN_IN, HIGH);
+    digitalWrite(LED_RED_OUT, LOW);
+    digitalWrite(LED_GREEN_OUT, HIGH);
+  }
+  else
+  {
+    RUN = false;
+  }
+  if (!RUN)
+  {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("  SERVICE HALT  ");
+    lcd.setCursor(4, 1);
+    lcd.print(rtc.getTimeStr());
+    delay(150);
+    digitalWrite(LED_RED_IN, HIGH);
+    digitalWrite(LED_GREEN_IN, LOW);
+    digitalWrite(LED_RED_OUT, HIGH);
+    digitalWrite(LED_GREEN_OUT, LOW);
+  }
+  if (RUN)
+  {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("IN:");
+    EEPROM.get(EE_ADDR_IN, EE_ADDR_IN_VAL);
+    lcd.print(EE_ADDR_IN_VAL);
+    lcd.setCursor(7, 0);
+    lcd.print(" ");
+    lcd.print("OUT:");
+    EEPROM.get(EE_ADDR_OUT, EE_ADDR_OUT_VAL);
+    lcd.print(EE_ADDR_OUT_VAL);
+    if (EE_ADDR_IN_VAL >= EE_ADDR_OUT_VAL && EE_ADDR_IN_VAL != 0) remaining = EE_ADDR_IN_VAL - EE_ADDR_OUT_VAL;
+    lcd.setCursor(0, 1);
+    lcd.print("RM:");
+    lcd.print(remaining);
+    lcd.setCursor(8, 1);
+    lcd.print(rtc.getTimeStr());
+    delay(250);
+  }
+  if (digitalRead(menu) == LOW)
+  {
+    while (true)
+    {
+      if (brk) break;
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print(" SET START TIME ");
+      lcd.setCursor(0, 1);
+      lcd.print("Press Enter/INC");
+      delay(100);
+      if (digitalRead(menu) == LOW)
+      {
+        delay(200);
+        break;
+      }
+      if (digitalRead(enter) == LOW)
+      {
+        delay(200);
+        set_start_time();
+      }
+      if (digitalRead(inc) == LOW)
+      {
+        delay(100);
+        while (true)
+        {
+          if (brk) break;
+          lcd.clear();
+          lcd.setCursor(0, 0);
+          lcd.print("  SET END TIME ");
+          lcd.setCursor(0, 1);
+          lcd.print("Press Enter/DEC");
+          delay(50);
+          if (digitalRead(menu) == LOW)
+          {
+            delay(250);
+            break;
+          }
+          if (digitalRead(enter) == LOW)
+          {
+            delay(200);
+            set_end_time();
+          }
+          if (digitalRead(dec) == LOW)
+          {
+            delay(200);
+            break;
+          }
+        }
+      }
+    }
+  }
+}
+void in_count_func()
+{
+  if (RUN)
+  {
+    EEPROM.get(EE_ADDR_IN, in_count);
+    EEPROM.get(EE_ADDR_OUT, out_count);
+    in_count += 1;
+    EEPROM.put(EE_ADDR_IN, in_count);
+    digitalWrite(buzz, HIGH);
+    for (int i = 0; i < 500; i++)
+    {
+      digitalWrite(LED_RED_IN, HIGH);
+      digitalWrite(LED_GREEN_IN, LOW);
+      delayMicroseconds(1000);
+      if (digitalRead(OUT) == LOW && in_count > out_count)
+      {
+        out_count += 1;
+        EEPROM.put(EE_ADDR_OUT, out_count);
+        for (int j = 0; j < 500; j++)
+        {
+          digitalWrite(LED_RED_OUT, HIGH);
+          digitalWrite(LED_GREEN_OUT, LOW);
+          delayMicroseconds(1000);
+        }
+      }
+      digitalWrite(LED_RED_OUT, LOW);
+      digitalWrite(LED_GREEN_OUT, HIGH);
+    }
+    digitalWrite(LED_RED_IN, LOW);
+    digitalWrite(LED_GREEN_IN, HIGH);
+    digitalWrite(buzz, LOW);
+  }
+}
+
+void out_count_func()
+{
+  if (RUN)
+  {
+    EEPROM.get(EE_ADDR_IN, in_count);
+    EEPROM.get(EE_ADDR_OUT, out_count);
+    if (in_count > out_count)
+    {
+      out_count += 1;
+      EEPROM.put(EE_ADDR_OUT, out_count);
+    }
+    digitalWrite(buzz, HIGH);
+    for (int i = 0; i < 500; i++)
+    {
+      digitalWrite(LED_RED_OUT, HIGH);
+      digitalWrite(LED_GREEN_OUT, LOW);
+      delayMicroseconds(1000);
+      if (digitalRead(IN) == LOW)
+      {
+        in_count += 1;
+        EEPROM.put(EE_ADDR_IN, in_count);
+        for (int j = 0; j < 500; j++)
+        {
+          digitalWrite(LED_RED_IN, HIGH);
+          digitalWrite(LED_GREEN_IN, LOW);
+          delayMicroseconds(1000);
+        }
+      }
+      digitalWrite(LED_RED_IN, LOW);
+      digitalWrite(LED_GREEN_IN, HIGH);
+    }
+    digitalWrite(LED_RED_OUT, LOW);
+    digitalWrite(LED_GREEN_OUT, HIGH);
+    digitalWrite(buzz, LOW);
+  }
+}
+
+void set_start_time()
+{
+  int hrs = 0;
+  int Min = 0;
+  brk = true;
+  hrs = EEPROM.read(EE_HRS_ADD);
+  Min = EEPROM.read(EE_MIN_ADD);
+  while (true)
+  {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("ENTER HOURS:");
+    lcd.setCursor(0, 1);
+    lcd.print(hrs);
+    delay(100);
+    if (digitalRead(inc) == LOW)
+    {
+      hrs += 1;
+      if (hrs > 23) hrs = 0;
+      delay(200);
+    }
+    if (digitalRead(dec) == LOW)
+    {
+      hrs -= 1;
+      if (hrs < 0) hrs = 23;
+      delay(200);
+    }
+    if (digitalRead(enter) == LOW)
+    {
+      delay(200);
+      EEPROM.write(EE_HRS_ADD, hrs);
+      break;
+    }
+  }
+  while (true)
+  {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("ENTER MINUTE:");
+    lcd.setCursor(0, 1);
+    lcd.print(Min);
+    delay(100);
+    if (digitalRead(inc) == LOW)
+    {
+      Min += 1;
+      if (Min > 59) Min = 0;
+      delay(200);
+    }
+    if (digitalRead(dec) == LOW)
+    {
+      Min -= 1;
+      if (Min < 0) Min = 59;
+      delay(200);
+    }
+    if (digitalRead(enter) == LOW)
+    {
+      delay(200);
+      EEPROM.write(EE_MIN_ADD, Min);
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("START TIME SAVED");
+      lcd.setCursor(0, 1);
+      lcd.print("*****************");
+      delay(1500);
+      break;
+    }
+  }
+}
+
+void set_end_time()
+{
+  int hrs = 0;
+  int Min = 0;
+  brk = true;
+  hrs = EEPROM.read(EE_HRS_ADD_STOP);
+  Min = EEPROM.read(EE_MIN_ADD_STOP);
+  while (true)
+  {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("ENTER HOURS:");
+    lcd.setCursor(0, 1);
+    lcd.print(hrs);
+    delay(100);
+    if (digitalRead(inc) == LOW)
+    {
+      hrs += 1;
+      if (hrs > 23) hrs = 0;
+      delay(200);
+    }
+    if (digitalRead(dec) == LOW)
+    {
+      hrs -= 1;
+      if (hrs < 0) hrs = 23;
+      delay(200);
+    }
+    if (digitalRead(enter) == LOW)
+    {
+      delay(200);
+      EEPROM.write(EE_HRS_ADD_STOP, hrs);
+      break;
+    }
+  }
+  while (true)
+  {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("ENTER MINUTE:");
+    lcd.setCursor(0, 1);
+    lcd.print(Min);
+    delay(100);
+    if (digitalRead(inc) == LOW)
+    {
+      Min += 1;
+      if (Min > 59) Min = 0;
+      delay(200);
+    }
+    if (digitalRead(dec) == LOW)
+    {
+      Min -= 1;
+      if (Min < 0) Min = 59;
+      delay(200);
+    }
+    if (digitalRead(enter) == LOW)
+    {
+      delay(200);
+      EEPROM.write(EE_MIN_ADD_STOP, Min);
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("STOP TIME SAVED");
+      lcd.setCursor(0, 1);
+      lcd.print("*****************");
+      delay(1500);
+      break;
+    }
+  }
+}
+
+void save()
+{
+  if (t.hour == EEPROM.read(EE_HRS_ADD_STOP) && t.min == EEPROM.read(EE_MIN_ADD_STOP) && t.sec == 59)
+  {
+    myFile = SD.open("DATA.txt", FILE_WRITE);
+    if (myFile)
+    {
+      myFile.print("DATE: ");
+      myFile.print(rtc.getDateStr());
+      myFile.print(" |");
+      myFile.print(" ");
+      myFile.print("FROM ");
+      myFile.print(EEPROM.read(EE_HRS_ADD));
+      myFile.print(":");
+      myFile.print(EEPROM.read(EE_MIN_ADD));
+      myFile.print(":");
+      myFile.print("00");
+      myFile.print(" TO ");
+      myFile.print(EEPROM.read(EE_HRS_ADD_STOP));
+      myFile.print(":");
+      myFile.print(EEPROM.read(EE_MIN_ADD_STOP));
+      myFile.print(":");
+      myFile.print("59");
+      myFile.print(" |");
+      myFile.print(" ");
+      myFile.print("IN: ");
+      EEPROM.get(EE_ADDR_IN, in_count);
+      myFile.print(in_count);
+      myFile.print(" |");
+      myFile.print(" ");
+      myFile.print("OUT: ");
+      EEPROM.get(EE_ADDR_OUT, out_count);
+      myFile.print(out_count);
+      myFile.print(" |");
+      myFile.print(" ");
+      myFile.print("REMAINING: ");
+      myFile.print(in_count - out_count);
+      myFile.println(" ");
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print(" DATA SAVING... ");
+      lcd.setCursor(0, 1);
+      lcd.print("****************");
+      delay(1500);
+      EEPROM.put(EE_ADDR_IN, 0);
+      EEPROM.put(EE_ADDR_OUT, 0);
+      in_count = 0;
+      out_count = 0;
+      remaining = 0;
+      myFile.close();
+    }
+  }
+}
